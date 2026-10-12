@@ -1,0 +1,38 @@
+#define VIBRATION_PIN 27   // SW-420 vibration sensor digital output
+#define MOISTURE_PIN   34  // Soil moisture sensor analog output
+#define BUZZER_PIN     26  // Buzzer output
+
+const int MOISTURE_THRESHOLD = 2000;  // adjust for your sensor: below this = "too dry"
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("System starting...");
+
+  pinMode(VIBRATION_PIN, INPUT_PULLUP);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
+void loop() {
+  int vibration = digitalRead(VIBRATION_PIN);
+  int moisture  = analogRead(MOISTURE_PIN);
+
+  Serial.print("Vibration: ");
+  Serial.print(vibration == LOW ? "DETECTED" : "none");
+  Serial.print("  |  Moisture: ");
+  Serial.println(moisture);
+
+  bool vibrationAlert = (vibration == LOW);
+  bool moistureAlert  = (moisture < MOISTURE_THRESHOLD);
+
+  if (vibrationAlert || moistureAlert) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    if (vibrationAlert) Serial.println("ALERT: Vibration detected!");
+    if (moistureAlert)  Serial.println("ALERT: Soil too dry!");
+  } else {
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+
+  delay(500);
+}
