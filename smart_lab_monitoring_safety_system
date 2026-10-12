@@ -1,0 +1,192 @@
+#define BLYNK_TEMPLATE_ID   "TMPL3_Y057H5d"
+#define BLYNK_TEMPLATE_NAME "Lab Safety Monitor"
+#define BLYNK_AUTH_TOKEN    "Bd-3loX8vpsFC7tdZlbdL46d9YTy91z5"
+
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include "DHTesp.h"
+#include <RTClib.h>
+
+// ---------------- WiFi ----------------
+char ssid[] = "Wokwi-GUEST";
+char pass[] = "";
+// For real hardware, comment the two lines above and use:
+// char ssid[] = "ECE TP";
+// char pass[] = "Gce@2026";
+
+// ---------------- Pin Map ----------------
+#define GAS_AO      34
+#define GAS_DO      35
+#define DHT_PIN     4
+#define PIR_PIN     27
+#define RELAY_PIN   26
+#define BUZZER_PIN  25
+#define LED_GREEN   32
+#define LED_YELLOW  33
+#define LED_RED     13
+#define ACK_BUTTON  14
+
+// ---------------- Thresholds ----------------
+const int   GAS_CRITICAL   = 2500;
+const float TEMP_CRITICAL  = 45.0;
+const float TEMP_WARNING   = 35.0;
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+DHTesp dhtSensor;
+RTC_DS1307 rtc;
+
+bool alarmAcknowledged = false;
+unsigned long lastDisplaySwitch = 0;
+unsigned long lastBlynkSend = 0;   // <-- replaces BlynkTimer
+int displayPage = 0;
+
+BLYNK_WRITE(V6) {
+  if (param.asInt() == 1) alarmAcknowledged = true;
+}
+
+void sendToBlynk(int gasValue, float temp, float humidity, bool motion, bool relayOn, bool alarmOn) {
+  Blynk.virtualWrite(V0, gasValue);
+  Blynk.virtualWrite(V1, temp);
+  Blynk.virtualWrite(V2, humidity);
+  Blynk.virtualWrite(V3, motion ? 1 : 0);
+  Blynk.virtualWrite(V4, relayOn ? 1 : 0);
+  Blynk.virtualWrite(V5, alarmOn ? 1 : 0);
+}
+
+void logEvent(const char* message) {
+  DateTime now = rtc.now();
+  Serial.print("[");
+  Serial.print(now.year()); Serial.print("-");
+  Serial.print(now.month()); Serial.print("-");
+  Serial.print(now.day()); Serial.print(" ");
+  Serial.print(now.hour()); Serial.print(":");
+  Serial.print(now.minute()); Serial.print(":");
+  Serial.print(now.second());
+  Serial.print("] EVENT: ");
+  Serial.println(message);
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(GAS_DO, INPUT);
+  pinMode(PIR_PIN, INPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_YELLOW, OUTPUT);
+  pinMode(LED_RED, OUTPUT);
+  pinMode(ACK_BUTTON, INPUT_PULLUP);
+
+  Wire.begin(21, 22);
+  lcd.init();
+  lcd.backlight();
+
+  if (!rtc.begin()) {
+    Serial.println("RTC not found!");
+  }
+  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__))); // uncomment once, then re-comment
+
+  dhtSensor.setup(DHT_PIN, DHTesp::DHT22);
+
+  lcd.setCursor(0, 0);
+  lcd.print("Lab Safety Sys");
+  lcd.setCursor(0, 1);
+  lcd.print("Connecting WiFi");
+
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  lcd.clear();
+  logEvent("SYSTEM STARTED");
+}
+
+void loop() {
+  Blynk.run();
+
+  int   gasValue    = analogRead(GAS_AO);
+  bool  gasAlert     = digitalRead(GAS_DO) == LOW;
+  TempAndHumidity data = dhtSensor.getTempAndHumidity();
+  bool  motion       = digitalRead(PIR_PIN) == HIGH;
+
+  bool tempCritical = data.temperature > TEMP_CRITICAL;
+  bool tempWarning  = data.temperature > TEMP_WARNING;
+  bool gasCritical  = gasAlert || gasValue > GAS_CRITICAL;
+
+  // ---- send to Blynk every 3 seconds, no BlynkTimer needed ----
+  if (millis() - lastBlynkSend > 3000) {
+    lastBlynkSend = millis();
+    sendToBlynk(gasValue, data.temperature, data.humidity, motion,
+                digitalRead(RELAY_PIN), digitalRead(BUZZER_PIN));
+  }
+
+  if (digitalRead(ACK_BUTTON) == LOW) {
+    alarmAcknowledged = true;
+    delay(200);
+  }
+
+  if (gasCritical || tempCritical) {
+    digitalWrite(LED_RED, HIGH);
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(RELAY_PIN, HIGH);
+    if (!alarmAcknowledged) digitalWrite(BUZZER_PIN, HIGH);
+
+    lcd.setCursor(0, 0);
+    lcd.print(gasCritical ? "GAS LEAK ALERT! " : "FIRE RISK! HIGH ");
+    lcd.setCursor(0, 1);
+    lcd.print("Gas:"); lcd.print(gasValue);
+    lcd.print(" T:"); lcd.print(data.temperature, 0); lcd.print("C   ");
+
+    logEvent(gasCritical ? "GAS ALERT" : "TEMP ALERT");
+
+  } else if (tempWarning || motion) {
+    digitalWrite(LED_RED, LOW);
+    digitalWrite(LED_YELLOW, HIGH);
+    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(RELAY_PIN, LOW);
+    digitalWrite(BUZZER_PIN, LOW);
+    alarmAcknowledged = false;
+
+    lcd.setCursor(0, 0);
+    lcd.print(motion ? "Motion Detected " : "Temp Warning    ");
+    lcd.setCursor(0, 1);
+    lcd.print("Gas:"); lcd.print(gasValue);
+    lcd.print(" T:"); lcd.print(data.temperature, 0); lcd.print("C   ");
+
+    if (motion) logEvent("MOTION DETECTED");
+
+  } else {
+    digitalWrite(LED_RED, LOW);
+    digitalWrite(LED_YELLOW, LOW);
+    digitalWrite(LED_GREEN, HIGH);
+    digitalWrite(RELAY_PIN, LOW);
+    digitalWrite(BUZZER_PIN, LOW);
+    alarmAcknowledged = false;
+
+    if (millis() - lastDisplaySwitch > 3000) {
+      displayPage = 1 - displayPage;
+      lastDisplaySwitch = millis();
+      lcd.clear();
+    }
+
+    if (displayPage == 0) {
+      lcd.setCursor(0, 0);
+      lcd.print("Status: SAFE    ");
+      lcd.setCursor(0, 1);
+      lcd.print("Gas:"); lcd.print(gasValue);
+      lcd.print(" T:"); lcd.print(data.temperature, 0); lcd.print("C   ");
+    } else {
+      DateTime now = rtc.now();
+      lcd.setCursor(0, 0);
+      lcd.print("Humidity: "); lcd.print(data.humidity, 0); lcd.print("%  ");
+      lcd.setCursor(0, 1);
+      char buf[17];
+      sprintf(buf, "%02d:%02d:%02d        ", now.hour(), now.minute(), now.second());
+      lcd.print(buf);
+    }
+  }
+
+  delay(300);
+}
