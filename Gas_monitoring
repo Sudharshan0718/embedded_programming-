@@ -1,0 +1,46 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+// ---- WiFi credentials ----
+// If running this in Wokwi simulation, use the built-in guest network:
+const char* ssid     = "Wokwi-GUEST";
+const char* password = "";
+// If running on real hardware, replace with your own WiFi name/password.
+// ---- ThingSpeak settings ----
+const char* server = "http://api.thingspeak.com/update";
+String apiKey = "93A89TM9YB9YZPIE";   // <-- put your channel's Write API Key here
+const int gasSensorPin = 34;   // MQ-2 analog output (AO) wired to GPIO34
+void setup() {
+  Serial.begin(115200);
+  pinMode(gasSensorPin, INPUT);
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected!");
+  Serial.println(WiFi.localIP());
+}
+void loop() {
+  int gasValue = analogRead(gasSensorPin);   // 0 - 4095 on ESP32's 12-bit ADC
+  Serial.print("Gas sensor value: ");
+  Serial.println(gasValue);
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = String(server) + "?api_key=" + apiKey + "&field1=" + String(gasValue);
+    http.begin(url);
+    int httpCode = http.GET();
+
+    if (httpCode > 0) {
+      Serial.print("ThingSpeak response code: ");
+      Serial.println(httpCode);
+    } else {
+      Serial.print("Error sending data, code: ");
+      Serial.println(httpCode);
+    }
+    http.end();
+  } else {
+    Serial.println("WiFi not connected, skipping upload.");
+  }
+  delay(20000);
+}
